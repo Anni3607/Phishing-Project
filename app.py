@@ -2,24 +2,25 @@ import streamlit as st
 import joblib
 import numpy as np
 import re
-import os
+import matplotlib.pyplot as plt
 from scipy.sparse import hstack
+import os
 
 # =====================================
-# LOAD ARTIFACTS (ROOT DIRECTORY SAFE)
+# LOAD ARTIFACTS
 # =====================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-MODEL_PATH = os.path.join(BASE_DIR, "model_context_aware.pkl")
-VECTORIZER_PATH = os.path.join(BASE_DIR, "tfidf_vectorizer.pkl")
-SCALER_PATH = os.path.join(BASE_DIR, "sender_scaler.pkl")
-TRUST_PATH = os.path.join(BASE_DIR, "sender_trust_scores.pkl")
+MODEL_PATH = "model_context_aware.pkl"
+VECTORIZER_PATH = "tfidf_vectorizer.pkl"
+SCALER_PATH = "sender_scaler.pkl"
+TRUST_PATH = "sender_trust_scores.pkl"
 
 model = joblib.load(MODEL_PATH)
 vectorizer = joblib.load(VECTORIZER_PATH)
 scaler = joblib.load(SCALER_PATH)
 trust_dict = joblib.load(TRUST_PATH)
+
+GLOBAL_TRUST_PRIOR = 0.5
 
 # =====================================
 # FEATURE ENGINEERING
@@ -30,7 +31,7 @@ def extract_structural_features(text: str):
     domains = re.findall(r'http[s]?://([^/]+)/?', text)
     num_unique_domains = len(set(domains))
     has_ip_url = 1 if re.search(r'http[s]?://\d+\.\d+\.\d+\.\d+', text) else 0
-
+    
     suspicious_tlds = ['.ru', '.tk', '.xyz', '.top']
     suspicious_tld = 1 if any(tld in text.lower() for tld in suspicious_tlds) else 0
 
@@ -40,63 +41,172 @@ def extract_structural_features(text: str):
     urgent_words = ['urgent', 'immediately', 'verify', 'suspend']
     urgent_flag = 1 if any(word in text.lower() for word in urgent_words) else 0
 
-    return [
-        num_urls,
-        num_unique_domains,
-        has_ip_url,
-        suspicious_tld,
-        exclamation_count,
-        uppercase_ratio,
-        urgent_flag
-    ]
+    return {
+        "num_urls": num_urls,
+        "num_unique_domains": num_unique_domains,
+        "has_ip_url": has_ip_url,
+        "suspicious_tld": suspicious_tld,
+        "exclamation_count": exclamation_count,
+        "uppercase_ratio": uppercase_ratio,
+        "urgent_flag": urgent_flag
+    }
 
 def get_trust_score(sender: str):
     if not sender:
-        return 0.5
-    return trust_dict.get(sender.lower(), 0.5)
+        return GLOBAL_TRUST_PRIOR, True
+    sender = sender.lower().strip()
+    if sender in trust_dict:
+        return trust_dict[sender], False
+    return GLOBAL_TRUST_PRIOR, True
 
 # =====================================
-# STREAMLIT UI
+# STREAMLIT CONFIG
 # =====================================
 
-st.set_page_config(page_title="Context-Aware Phishing Detector")
+st.set_page_config(page_title="Context-Aware Phishing Detector", layout="wide")
 
 st.title("Context-Aware Phishing Detection")
-st.write("Email Text + Sender Behavioral Modeling")
+st.markdown("Email Text + Sender Behavioral Modeling")
 
 sender_input = st.text_input("Sender Email")
-email_text = st.text_area("Email Content")
+email_text = st.text_area("Email Content", height=200)
 
 if st.button("Analyze Email"):
 
     if not email_text.strip():
         st.warning("Please enter email content.")
-    else:
-        # Text Features
-        text_features = vectorizer.transform([email_text])
+        st.stop()
 
-        # Structural Features
-        struct_features = extract_structural_features(email_text)
+    # -------------------------
+    # Feature Extraction
+    # -------------------------
 
-        # Trust Score
-        trust_score = get_trust_score(sender_input)
+    struct_dict = extract_structural_features(email_text)
+    trust_score, is_cold_start = get_trust_score(sender_input)
 
-        numeric_features = np.array(struct_features + [trust_score]).reshape(1, -1)
-        numeric_scaled = scaler.transform(numeric_features)
+    text_features = vectorizer.transform([email_text])
 
-        # Combine Sparse + Numeric
-        final_features = hstack([text_features, numeric_scaled])
+    numeric_features = np.array(list(struct_dict.values()) + [trust_score]).reshape(1, -1)
+    numeric_scaled = scaler.transform(numeric_features)
 
-        # Prediction
-        probability = model.predict_proba(final_features)[0][1]
-        prediction = model.predict(final_features)[0]
+    final_features = hstack([text_features, numeric_scaled])
 
-        st.subheader("Result")
+    probability = model.predict_proba(final_features)[0][1]
+    prediction = model.predict(final_features)[0]
 
-        if prediction == 1:
-            st.error("Phishing Detected")
+    # -------------------------
+    # TABS
+    # -------------------------
+
+    tab1, tab2, tab3 = st.tabs(["Prediction", "Behavior Analysis", "Feature Visualization"])
+
+    # =====================================================
+    # TAB 1 — PREDICTION
+    # =====================================================
+
+    with tab1:
+
+        st.subheader("Risk Level")
+
+        st.progress(float(probability))
+
+        if probability > 0.7:
+            st.error("High Risk: Phishing Likely")
+        elif probability > 0.4:
+            st.warning("Medium Risk: Suspicious Email")
         else:
-            st.success("Legitimate Email")
+            st.success("Low Risk: Likely Legitimate")
+
+        st.subheader("Prediction Distribution")
+
+        st.bar_chart({
+            "Legitimate": [1 - probability],
+            "Phishing": [probability]
+        })
 
         st.write(f"Phishing Probability: {probability:.4f}")
+
+    # =====================================================
+    # TAB 2 — BEHAVIOR ANALYSIS
+    # =====================================================
+
+    with tab2:
+
+        st.subheader("Sender Trust Level")
+
+        st.progress(float(trust_score))
+
+        if trust_score < 0.3:
+            st.error("Low Trust Sender")
+        elif trust_score < 0.7:
+            st.warning("Moderate Trust Sender")
+        else:
+            st.success("High Trust Sender")
+
+        if is_cold_start:
+            st.info("New sender detected. Trust score assigned from global prior.")
+
         st.write(f"Sender Trust Score: {trust_score:.4f}")
+
+        st.subheader("Why This Was Flagged")
+
+        reasons = []
+
+        if struct_dict["num_urls"] > 0:
+            reasons.append("Contains URLs")
+
+        if struct_dict["has_ip_url"] == 1:
+            reasons.append("Contains IP-based URL")
+
+        if struct_dict["suspicious_tld"] == 1:
+            reasons.append("Contains suspicious top-level domain")
+
+        if struct_dict["exclamation_count"] > 3:
+            reasons.append("High number of exclamation marks")
+
+        if struct_dict["urgent_flag"] == 1:
+            reasons.append("Contains urgency-related language")
+
+        if trust_score < 0.4:
+            reasons.append("Sender has low historical trust score")
+
+        if reasons:
+            for r in reasons:
+                st.write(f"• {r}")
+        else:
+            st.write("No strong structural risk indicators detected.")
+
+    # =====================================================
+    # TAB 3 — FEATURE VISUALIZATION
+    # =====================================================
+
+    with tab3:
+
+        st.subheader("Structural Feature Radar")
+
+        labels = ["URLs", "Unique Domains", "IP URL", "Suspicious TLD",
+                  "Exclamations", "Uppercase Ratio", "Urgency", "Trust"]
+
+        values = [
+            struct_dict["num_urls"],
+            struct_dict["num_unique_domains"],
+            struct_dict["has_ip_url"],
+            struct_dict["suspicious_tld"],
+            struct_dict["exclamation_count"],
+            struct_dict["uppercase_ratio"] * 10,
+            struct_dict["urgent_flag"] * 5,
+            trust_score * 10
+        ]
+
+        values += values[:1]
+        angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+        angles += angles[:1]
+
+        fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+        ax.plot(angles, values)
+        ax.fill(angles, values, alpha=0.25)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(labels)
+        ax.set_title("Email Structural Risk Profile")
+
+        st.pyplot(fig)
