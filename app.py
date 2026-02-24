@@ -180,33 +180,39 @@ if st.button("Analyze Email"):
     # TAB 3 — FEATURE VISUALIZATION
     # =====================================================
 
-    with tab3:
+   with tab3:
 
-        st.subheader("Structural Feature Radar")
+    st.subheader("Structural Feature Radar")
 
-        labels = ["URLs", "Unique Domains", "IP URL", "Suspicious TLD",
-                  "Exclamations", "Uppercase Ratio", "Urgency", "Trust"]
+    labels = ["URLs", "Domains", "IP URL", "TLD",
+              "Exclaim", "Uppercase", "Urgency", "Trust"]
 
-        values = [
-            struct_dict["num_urls"],
-            struct_dict["num_unique_domains"],
-            struct_dict["has_ip_url"],
-            struct_dict["suspicious_tld"],
-            struct_dict["exclamation_count"],
-            struct_dict["uppercase_ratio"] * 10,
-            struct_dict["urgent_flag"] * 5,
-            trust_score * 10
-        ]
+    values = [
+        min(struct_dict["num_urls"], 5),
+        min(struct_dict["num_unique_domains"], 5),
+        struct_dict["has_ip_url"],
+        struct_dict["suspicious_tld"],
+        min(struct_dict["exclamation_count"], 5),
+        struct_dict["uppercase_ratio"] * 5,
+        struct_dict["urgent_flag"] * 5,
+        trust_score * 5
+    ]
 
-        values += values[:1]
-        angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
-        angles += angles[:1]
+    values += values[:1]
 
-        fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
-        ax.plot(angles, values)
-        ax.fill(angles, values, alpha=0.25)
-        ax.set_xticks(angles[:-1])
-        ax.set_xticklabels(labels)
-        ax.set_title("Email Structural Risk Profile")
+    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+    angles += angles[:1]
 
-        st.pyplot(fig)
+    fig, ax = plt.subplots(figsize=(4, 4), subplot_kw=dict(polar=True))
+
+    ax.plot(angles, values, linewidth=2)
+    ax.fill(angles, values, alpha=0.25)
+
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(labels, fontsize=8)
+
+    ax.set_yticks([])
+    ax.set_title("")
+
+    st.pyplot(fig, use_container_width=False)
+
