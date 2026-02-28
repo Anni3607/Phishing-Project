@@ -4,6 +4,7 @@ import numpy as np
 import re
 import plotly.graph_objects as go
 from scipy.sparse import hstack
+import sqlite3
 
 # ============================
 # LOAD ARTIFACTS
@@ -12,9 +13,25 @@ from scipy.sparse import hstack
 model = joblib.load("model_sender_trust_unified.pkl")
 vectorizer = joblib.load("tfidf_vectorizer.pkl")
 scaler = joblib.load("structural_scaler.pkl")
-trust_dict = joblib.load("sender_trust_dict.pkl")
 
 GLOBAL_TRUST_PRIOR = 0.5
+ALPHA = 2  # Bayesian smoothing strength
+
+# ============================
+# SQLITE DATABASE (Dynamic Trust Storage)
+# ============================
+
+conn = sqlite3.connect("sender_reputation.db", check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS sender_reputation (
+    sender TEXT PRIMARY KEY,
+    legit_count INTEGER,
+    phish_count INTEGER
+)
+""")
+conn.commit()
 
 # ============================
 # FEATURE ENGINEERING
@@ -47,10 +64,52 @@ def extract_structural_features(text):
         urgent_flag
     ]
 
+# ============================
+# DYNAMIC TRUST FUNCTIONS
+# ============================
+
 def get_trust_score(sender):
     if not sender:
         return GLOBAL_TRUST_PRIOR
-    return trust_dict.get(sender, GLOBAL_TRUST_PRIOR)
+
+    sender = sender.strip().lower()
+
+    cursor.execute("SELECT legit_count, phish_count FROM sender_reputation WHERE sender=?", (sender,))
+    row = cursor.fetchone()
+
+    if row:
+        legit, phish = row
+        trust = (legit + ALPHA) / (legit + phish + 2 * ALPHA)
+        return trust
+    else:
+        return GLOBAL_TRUST_PRIOR
+
+
+def update_reputation(sender, predicted_label):
+    if not sender:
+        return
+
+    sender = sender.strip().lower()
+
+    cursor.execute("SELECT legit_count, phish_count FROM sender_reputation WHERE sender=?", (sender,))
+    row = cursor.fetchone()
+
+    if row:
+        legit, phish = row
+    else:
+        legit, phish = 0, 0
+
+    if predicted_label == 0:
+        legit += 1
+    else:
+        phish += 1
+
+    cursor.execute("""
+    INSERT OR REPLACE INTO sender_reputation (sender, legit_count, phish_count)
+    VALUES (?, ?, ?)
+    """, (sender, legit, phish))
+
+    conn.commit()
 
 # ============================
 # UI
@@ -58,7 +117,7 @@ def get_trust_score(sender):
 
 st.set_page_config(page_title="Sender-Trust Phishing Detection", layout="wide")
 st.title("Sender-Trust Aware Phishing Detection")
-st.caption("TF-IDF + Structural Features + Sender Behavioral Trust")
+st.caption("TF-IDF + Structural Features + Dynamic Sender Behavioral Trust")
 
 sender_input = st.text_input("Sender Email")
 email_text = st.text_area("Email Content", height=220)
@@ -86,12 +145,17 @@ if st.button("Analyze Email"):
     prob_pct = probability * 100
     trust_pct = trust_score * 100
 
+    # Text-only comparison
     zero_numeric = np.zeros_like(numeric_features)
     text_only_features = hstack([text_features, zero_numeric])
     text_prob_pct = model.predict_proba(text_only_features)[0][1] * 100
 
+    # Update dynamic trust AFTER prediction
+    predicted_label = 1 if probability >= 0.5 else 0
+    update_reputation(sender_input, predicted_label)
+
     # ============================
-    # DEFINE ALL 7 TABS
+    # TABS
     # ============================
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
@@ -132,11 +196,11 @@ if st.button("Analyze Email"):
         else:
             st.success("Low Risk: Likely Legitimate")
 
-        st.write(f"Sender Trust Score: {trust_pct:.1f}%")
+        st.write(f"Sender Trust Score (Dynamic): {trust_pct:.1f}%")
 
     # TAB 2
     with tab2:
-        st.subheader("Sender Trust")
+        st.subheader("Sender Trust (Live Reputation)")
         st.progress(float(trust_score))
         st.write(f"Trust Score: {trust_pct:.1f}%")
 
