@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from scipy.sparse import hstack
 
 # ============================
-# LOAD ARTIFACTS (FINAL UNIFIED MODEL)
+# LOAD ARTIFACTS
 # ============================
 
 model = joblib.load("model_sender_trust_unified.pkl")
@@ -26,7 +26,6 @@ def extract_structural_features(text):
     num_urls = len(re.findall(r'https?://\S+|www\.\S+', text))
     domains = re.findall(r'https?://([^/\s]+)', text)
     num_unique_domains = len(set(domains))
-
     has_ip_url = 1 if re.search(r'https?://\d+\.\d+\.\d+\.\d+', text) else 0
 
     suspicious_tlds = ['.ru', '.tk', '.xyz', '.top', '.click']
@@ -54,7 +53,7 @@ def get_trust_score(sender):
     return trust_dict.get(sender, GLOBAL_TRUST_PRIOR)
 
 # ============================
-# UI CONFIG
+# UI
 # ============================
 
 st.set_page_config(page_title="Sender-Trust Phishing Detection", layout="wide")
@@ -70,57 +69,43 @@ if st.button("Analyze Email"):
         st.warning("Please enter email content.")
         st.stop()
 
-    # ============================
-    # FEATURE PROCESSING
-    # ============================
-
     struct_features = extract_structural_features(email_text)
     trust_score = get_trust_score(sender_input)
 
-    # Text features
     text_features = vectorizer.transform([email_text])
 
-    # Scale ONLY structural features (7 features)
     struct_array = np.array(struct_features).reshape(1, -1)
     struct_scaled = scaler.transform(struct_array)
 
-    # Append trust (NOT scaled)
     trust_array = np.array([[trust_score]])
-
     numeric_features = np.hstack([struct_scaled, trust_array])
 
-    # Combine text + numeric
     final_features = hstack([text_features, numeric_features])
 
-    # Predictions
     probability = model.predict_proba(final_features)[0][1]
     prob_pct = probability * 100
     trust_pct = trust_score * 100
 
-    # Text-only comparison
     zero_numeric = np.zeros_like(numeric_features)
     text_only_features = hstack([text_features, zero_numeric])
-    probability_text_only = model.predict_proba(text_only_features)[0][1]
-    text_prob_pct = probability_text_only * 100
+    text_prob_pct = model.predict_proba(text_only_features)[0][1] * 100
 
     # ============================
-    # TABS
+    # DEFINE ALL 7 TABS
     # ============================
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "Prediction",
         "Behavior Analysis",
         "Feature Visualization",
         "Feature Contribution",
-        "Model Comparison"
+        "Model Comparison",
+        "Probability Decomposition",
+        "Top Word Signals"
     ])
 
-    # ============================
-    # TAB 1 — PREDICTION
-    # ============================
-
+    # TAB 1
     with tab1:
-
         st.subheader("Risk Level")
 
         fig = go.Figure(go.Indicator(
@@ -133,12 +118,12 @@ if st.button("Analyze Email"):
                     'color': "red" if prob_pct > 70
                     else "orange" if prob_pct > 40
                     else "green"
-                },
+                }
             }
         ))
 
         fig.update_layout(height=300)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         if prob_pct > 70:
             st.error("High Risk: Phishing Likely")
@@ -149,186 +134,88 @@ if st.button("Analyze Email"):
 
         st.write(f"Sender Trust Score: {trust_pct:.1f}%")
 
-    # ============================
-    # TAB 2 — BEHAVIOR ANALYSIS
-    # ============================
-
+    # TAB 2
     with tab2:
-
         st.subheader("Sender Trust")
-
         st.progress(float(trust_score))
         st.write(f"Trust Score: {trust_pct:.1f}%")
 
-        st.subheader("Why This Was Flagged")
-
-        reasons = []
-
-        if struct_features[0] > 0:
-            reasons.append("Contains URLs")
-        if struct_features[2] == 1:
-            reasons.append("Contains IP-based URL")
-        if struct_features[3] == 1:
-            reasons.append("Suspicious Top-Level Domain")
-        if struct_features[6] == 1:
-            reasons.append("Urgency-related Language")
-        if trust_score < 0.4:
-            reasons.append("Low Sender Trust Score")
-
-        if reasons:
-            for r in reasons:
-                st.write(f"- {r}")
-        else:
-            st.write("No strong structural red flags detected.")
-
-    # ============================
-    # TAB 3 — FEATURE VISUALIZATION
-    # ============================
-
+    # TAB 3
     with tab3:
-
-        labels = ["URLs", "Domains", "IP", "TLD",
-                  "Exclaim", "Uppercase", "Urgency", "Trust"]
+        labels = ["URLs","Domains","IP","TLD",
+                  "Exclaim","Uppercase","Urgency","Trust"]
 
         values = [
-            min(struct_features[0], 5),
-            min(struct_features[1], 5),
-            struct_features[2] * 5,
-            struct_features[3] * 5,
-            min(struct_features[4], 5),
-            struct_features[5] * 5,
-            struct_features[6] * 5,
-            trust_score * 5
+            min(struct_features[0],5),
+            min(struct_features[1],5),
+            struct_features[2]*5,
+            struct_features[3]*5,
+            min(struct_features[4],5),
+            struct_features[5]*5,
+            struct_features[6]*5,
+            trust_score*5
         ]
 
         fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(
-            r=values,
-            theta=labels,
-            fill='toself'
-        ))
+        fig.add_trace(go.Scatterpolar(r=values, theta=labels, fill='toself'))
+        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0,5])), height=450)
+        st.plotly_chart(fig, width="stretch")
 
-        fig.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
-            height=450
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ============================
-    # TAB 4 — FEATURE CONTRIBUTION
-    # ============================
-
+    # TAB 4
     with tab4:
-
-        if hasattr(model, "coef_"):
+        if hasattr(model,"coef_"):
             coefficients = model.coef_[0]
             text_dim = text_features.shape[1]
             numeric_coefs = coefficients[text_dim:]
+            feature_names = ["URLs","Domains","IP URL","Suspicious TLD",
+                             "Exclamation","Uppercase","Urgency","Trust"]
+            contributions = numeric_features.flatten()*numeric_coefs
 
-            feature_names = [
-                "URLs", "Domains", "IP URL", "Suspicious TLD",
-                "Exclamation", "Uppercase", "Urgency", "Trust"
-            ]
-
-            contributions = numeric_features.flatten() * numeric_coefs
-
-            fig = go.Figure(go.Bar(
-                x=contributions,
-                y=feature_names,
-                orientation='h'
-            ))
-
+            fig = go.Figure(go.Bar(x=contributions, y=feature_names, orientation='h'))
             fig.update_layout(height=500)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Feature contribution available only for linear models.")
+            st.plotly_chart(fig, width="stretch")
 
-    # ============================
-    # TAB 5 — MODEL COMPARISON
-    # ============================
-
+    # TAB 5
     with tab5:
+        col1,col2 = st.columns(2)
+        col1.metric("Text-only Probability", f"{text_prob_pct:.1f}%")
+        col2.metric("Trust-Aware Probability", f"{prob_pct:.1f}%")
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.metric("Text-only Probability", f"{text_prob_pct:.1f}%")
-
-        with col2:
-            st.metric("Trust-Aware Probability", f"{prob_pct:.1f}%")
-
-        delta = prob_pct - text_prob_pct
-
-        if delta > 0:
-            st.write(f"Behavioral context increased risk by {delta:.1f}%")
-        elif delta < 0:
-            st.write(f"Behavioral context reduced risk by {abs(delta):.1f}%")
-        else:
-            st.write("Behavioral context had no measurable impact.")
-
-
+    # TAB 6
     with tab6:
+        if hasattr(model,"coef_"):
+            coefficients = model.coef_[0]
+            intercept = model.intercept_[0]
+            text_dim = text_features.shape[1]
 
-    st.subheader("Probability Decomposition")
+            text_contribution = (text_features @ coefficients[:text_dim])[0]
+            numeric_contribution = np.dot(numeric_features.flatten(), coefficients[text_dim:])
+            total_logit = intercept + text_contribution + numeric_contribution
 
-    if hasattr(model, "coef_"):
-        coefficients = model.coef_[0]
-        intercept = model.intercept_[0]
+            st.write("Intercept:", round(float(intercept),4))
+            st.write("Text Contribution:", round(float(text_contribution),4))
+            st.write("Numeric Contribution:", round(float(numeric_contribution),4))
+            st.write("Final Logit:", round(float(total_logit),4))
+            st.write("Final Probability:", f"{prob_pct:.2f}%")
 
-        text_dim = text_features.shape[1]
-
-        text_coefs = coefficients[:text_dim]
-        numeric_coefs = coefficients[text_dim:]
-
-        text_contribution = (text_features @ text_coefs)[0]
-        numeric_contribution = np.dot(numeric_features.flatten(), numeric_coefs)
-
-        total_logit = intercept + text_contribution + numeric_contribution
-
-        st.write("Intercept (Base Bias):", round(intercept, 4))
-        st.write("Text Contribution:", round(float(text_contribution), 4))
-        st.write("Numeric Contribution:", round(float(numeric_contribution), 4))
-        st.write("Final Logit Score:", round(float(total_logit), 4))
-
-        st.write("Final Probability:", f"{prob_pct:.2f}%")
-
-
+    # TAB 7
     with tab7:
+        if hasattr(model,"coef_"):
+            coefficients = model.coef_[0]
+            text_dim = text_features.shape[1]
+            feature_names = vectorizer.get_feature_names_out()
+            text_vector = text_features.toarray().flatten()
+            word_contributions = text_vector * coefficients[:text_dim]
 
-    st.subheader("Top Word Signals")
+            top_pos = np.argsort(word_contributions)[-10:]
+            top_neg = np.argsort(word_contributions)[:10]
 
-    if hasattr(model, "coef_"):
+            st.subheader("Top Phishing Indicators")
+            for idx in reversed(top_pos):
+                if word_contributions[idx] > 0:
+                    st.write(feature_names[idx], round(word_contributions[idx],4))
 
-        coefficients = model.coef_[0]
-        text_dim = text_features.shape[1]
-
-        text_coefs = coefficients[:text_dim]
-
-        feature_names = vectorizer.get_feature_names_out()
-
-        text_vector = text_features.toarray().flatten()
-
-        word_contributions = text_vector * text_coefs
-
-        top_positive_idx = np.argsort(word_contributions)[-10:]
-        top_negative_idx = np.argsort(word_contributions)[:10]
-
-        st.write("Top Phishing Indicators (Positive Contribution):")
-
-        for idx in reversed(top_positive_idx):
-            if word_contributions[idx] > 0:
-                st.write(
-                    feature_names[idx],
-                    round(word_contributions[idx], 4)
-                )
-
-        st.write("Top Legitimate Indicators (Negative Contribution):")
-
-        for idx in top_negative_idx:
-            if word_contributions[idx] < 0:
-                st.write(
-                    feature_names[idx],
-                    round(word_contributions[idx], 4)
-                )
-
+            st.subheader("Top Legitimate Indicators")
+            for idx in top_neg:
+                if word_contributions[idx] < 0:
+                    st.write(feature_names[idx], round(word_contributions[idx],4))
