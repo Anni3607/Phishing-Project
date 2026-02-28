@@ -15,10 +15,10 @@ vectorizer = joblib.load("tfidf_vectorizer.pkl")
 scaler = joblib.load("structural_scaler.pkl")
 
 GLOBAL_TRUST_PRIOR = 0.5
-ALPHA = 2  # Bayesian smoothing strength
+ALPHA = 2
 
 # ============================
-# SQLITE DATABASE (Dynamic Trust Storage)
+# SQLITE DATABASE
 # ============================
 
 conn = sqlite3.connect("sender_reputation.db", check_same_thread=False)
@@ -65,7 +65,7 @@ def extract_structural_features(text):
     ]
 
 # ============================
-# DYNAMIC TRUST FUNCTIONS
+# DYNAMIC TRUST (Human Verified)
 # ============================
 
 def get_trust_score(sender):
@@ -79,13 +79,12 @@ def get_trust_score(sender):
 
     if row:
         legit, phish = row
-        trust = (legit + ALPHA) / (legit + phish + 2 * ALPHA)
-        return trust
+        return (legit + ALPHA) / (legit + phish + 2 * ALPHA)
     else:
         return GLOBAL_TRUST_PRIOR
 
 
-def update_reputation(sender, predicted_label):
+def update_reputation(sender, true_label):
     if not sender:
         return
 
@@ -99,7 +98,7 @@ def update_reputation(sender, predicted_label):
     else:
         legit, phish = 0, 0
 
-    if predicted_label == 0:
+    if true_label == 0:
         legit += 1
     else:
         phish += 1
@@ -117,7 +116,7 @@ def update_reputation(sender, predicted_label):
 
 st.set_page_config(page_title="Sender-Trust Phishing Detection", layout="wide")
 st.title("Sender-Trust Aware Phishing Detection")
-st.caption("TF-IDF + Structural Features + Dynamic Sender Behavioral Trust")
+st.caption("TF-IDF + Structural Features + Human-Verified Dynamic Sender Trust")
 
 sender_input = st.text_input("Sender Email")
 email_text = st.text_area("Email Content", height=220)
@@ -150,10 +149,6 @@ if st.button("Analyze Email"):
     text_only_features = hstack([text_features, zero_numeric])
     text_prob_pct = model.predict_proba(text_only_features)[0][1] * 100
 
-    # Update dynamic trust AFTER prediction
-    predicted_label = 1 if probability >= 0.5 else 0
-    update_reputation(sender_input, predicted_label)
-
     # ============================
     # TABS
     # ============================
@@ -164,11 +159,11 @@ if st.button("Analyze Email"):
         "Feature Visualization",
         "Feature Contribution",
         "Model Comparison",
-        "Probability Decomposition",
+        "Risk Breakdown",
         "Top Word Signals"
     ])
 
-    # TAB 1
+    # TAB 1 — Prediction
     with tab1:
         st.subheader("Risk Level")
 
@@ -196,15 +191,28 @@ if st.button("Analyze Email"):
         else:
             st.success("Low Risk: Likely Legitimate")
 
-        st.write(f"Sender Trust Score (Dynamic): {trust_pct:.1f}%")
+        st.write(f"Sender Trust Score: {trust_pct:.1f}%")
 
-    # TAB 2
+        st.divider()
+        st.subheader("Confirm Ground Truth")
+
+        col1, col2 = st.columns(2)
+
+        if col1.button("Mark as Legitimate"):
+            update_reputation(sender_input, 0)
+            st.success("Reputation updated as Legitimate")
+
+        if col2.button("Mark as Phishing"):
+            update_reputation(sender_input, 1)
+            st.success("Reputation updated as Phishing")
+
+    # TAB 2 — Behavior
     with tab2:
-        st.subheader("Sender Trust (Live Reputation)")
+        st.subheader("Sender Trust (Human Verified)")
         st.progress(float(trust_score))
         st.write(f"Trust Score: {trust_pct:.1f}%")
 
-    # TAB 3
+    # TAB 3 — Radar
     with tab3:
         labels = ["URLs","Domains","IP","TLD",
                   "Exclaim","Uppercase","Urgency","Trust"]
@@ -225,7 +233,7 @@ if st.button("Analyze Email"):
         fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0,5])), height=450)
         st.plotly_chart(fig, width="stretch")
 
-    # TAB 4
+    # TAB 4 — Numeric Contributions
     with tab4:
         if hasattr(model,"coef_"):
             coefficients = model.coef_[0]
@@ -239,30 +247,27 @@ if st.button("Analyze Email"):
             fig.update_layout(height=500)
             st.plotly_chart(fig, width="stretch")
 
-    # TAB 5
+    # TAB 5 — Comparison
     with tab5:
         col1,col2 = st.columns(2)
         col1.metric("Text-only Probability", f"{text_prob_pct:.1f}%")
         col2.metric("Trust-Aware Probability", f"{prob_pct:.1f}%")
 
-    # TAB 6
+    # TAB 6 — SIMPLE Risk Breakdown
     with tab6:
-        if hasattr(model,"coef_"):
-            coefficients = model.coef_[0]
-            intercept = model.intercept_[0]
-            text_dim = text_features.shape[1]
+        st.subheader("Risk Breakdown")
 
-            text_contribution = (text_features @ coefficients[:text_dim])[0]
-            numeric_contribution = np.dot(numeric_features.flatten(), coefficients[text_dim:])
-            total_logit = intercept + text_contribution + numeric_contribution
+        st.metric("Text-Based Risk", f"{text_prob_pct:.1f}%")
+        st.metric("Sender Trust Influence", f"{(prob_pct - text_prob_pct):+.1f}%")
 
-            st.write("Intercept:", round(float(intercept),4))
-            st.write("Text Contribution:", round(float(text_contribution),4))
-            st.write("Numeric Contribution:", round(float(numeric_contribution),4))
-            st.write("Final Logit:", round(float(total_logit),4))
-            st.write("Final Probability:", f"{prob_pct:.2f}%")
+        if prob_pct > text_prob_pct:
+            st.write("Sender reputation increased overall risk.")
+        elif prob_pct < text_prob_pct:
+            st.write("Sender reputation reduced overall risk.")
+        else:
+            st.write("Sender reputation had no effect.")
 
-    # TAB 7
+    # TAB 7 — Top Words
     with tab7:
         if hasattr(model,"coef_"):
             coefficients = model.coef_[0]
