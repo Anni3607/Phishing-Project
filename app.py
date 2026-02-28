@@ -267,3 +267,68 @@ if st.button("Analyze Email"):
         else:
             st.write("Behavioral context had no measurable impact.")
 
+
+    with tab6:
+
+    st.subheader("Probability Decomposition")
+
+    if hasattr(model, "coef_"):
+        coefficients = model.coef_[0]
+        intercept = model.intercept_[0]
+
+        text_dim = text_features.shape[1]
+
+        text_coefs = coefficients[:text_dim]
+        numeric_coefs = coefficients[text_dim:]
+
+        text_contribution = (text_features @ text_coefs)[0]
+        numeric_contribution = np.dot(numeric_features.flatten(), numeric_coefs)
+
+        total_logit = intercept + text_contribution + numeric_contribution
+
+        st.write("Intercept (Base Bias):", round(intercept, 4))
+        st.write("Text Contribution:", round(float(text_contribution), 4))
+        st.write("Numeric Contribution:", round(float(numeric_contribution), 4))
+        st.write("Final Logit Score:", round(float(total_logit), 4))
+
+        st.write("Final Probability:", f"{prob_pct:.2f}%")
+
+
+    with tab7:
+
+    st.subheader("Top Word Signals")
+
+    if hasattr(model, "coef_"):
+
+        coefficients = model.coef_[0]
+        text_dim = text_features.shape[1]
+
+        text_coefs = coefficients[:text_dim]
+
+        feature_names = vectorizer.get_feature_names_out()
+
+        text_vector = text_features.toarray().flatten()
+
+        word_contributions = text_vector * text_coefs
+
+        top_positive_idx = np.argsort(word_contributions)[-10:]
+        top_negative_idx = np.argsort(word_contributions)[:10]
+
+        st.write("Top Phishing Indicators (Positive Contribution):")
+
+        for idx in reversed(top_positive_idx):
+            if word_contributions[idx] > 0:
+                st.write(
+                    feature_names[idx],
+                    round(word_contributions[idx], 4)
+                )
+
+        st.write("Top Legitimate Indicators (Negative Contribution):")
+
+        for idx in top_negative_idx:
+            if word_contributions[idx] < 0:
+                st.write(
+                    feature_names[idx],
+                    round(word_contributions[idx], 4)
+                )
+
