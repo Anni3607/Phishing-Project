@@ -9,10 +9,10 @@ from scipy.sparse import hstack
 # LOAD ARTIFACTS
 # ============================
 
-model = joblib.load("model_context_aware.pkl")
+model = joblib.load("model_C_trust_aware.pkl")
 vectorizer = joblib.load("tfidf_vectorizer.pkl")
-scaler = joblib.load("sender_scaler.pkl")
-trust_dict = joblib.load("sender_trust_scores.pkl")
+scaler = joblib.load("structural_scaler.pkl")
+trust_dict = joblib.load("sender_trust_dict.pkl")
 
 GLOBAL_TRUST_PRIOR = 0.5
 
