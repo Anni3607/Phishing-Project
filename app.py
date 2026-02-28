@@ -67,20 +67,34 @@ if st.button("Analyze Email"):
         st.warning("Please enter email content.")
         st.stop()
 
-    # Feature processing
+    # ============================
+    # FEATURE PROCESSING
+    # ============================
+
     struct_features = extract_structural_features(email_text)
     trust_score = get_trust_score(sender_input)
 
+    # Text features
     text_features = vectorizer.transform([email_text])
-    numeric_features = np.array(struct_features + [trust_score]).reshape(1, -1)
-    numeric_scaled = scaler.transform(numeric_features)
-    final_features = hstack([text_features, numeric_scaled])
 
+    # Scale ONLY structural features (7 features)
+    struct_array = np.array(struct_features).reshape(1, -1)
+    struct_scaled = scaler.transform(struct_array)
+
+    # Append trust separately (NOT scaled)
+    trust_array = np.array([[trust_score]])
+
+    numeric_features = np.hstack([struct_scaled, trust_array])
+
+    # Combine sparse text + dense numeric
+    final_features = hstack([text_features, numeric_features])
+
+    # Predictions
     probability = model.predict_proba(final_features)[0][1]
     prediction = model.predict(final_features)[0]
 
-    # Text-only comparison
-    zero_numeric = np.zeros_like(numeric_scaled)
+    # Text-only comparison (numeric zeroed)
+    zero_numeric = np.zeros_like(numeric_features)
     text_only_features = hstack([text_features, zero_numeric])
     probability_text_only = model.predict_proba(text_only_features)[0][1]
 
@@ -100,9 +114,9 @@ if st.button("Analyze Email"):
         "Model Comparison"
     ])
 
-    # ==================================
+    # ============================
     # TAB 1 — PREDICTION
-    # ==================================
+    # ============================
 
     with tab1:
 
@@ -130,9 +144,9 @@ if st.button("Analyze Email"):
 
         st.write(f"Sender Trust Score: {trust_pct:.1f}%")
 
-    # ==================================
+    # ============================
     # TAB 2 — BEHAVIOR ANALYSIS
-    # ==================================
+    # ============================
 
     with tab2:
 
@@ -144,6 +158,7 @@ if st.button("Analyze Email"):
         st.subheader("Why This Was Flagged")
 
         reasons = []
+
         if struct_features[0] > 0:
             reasons.append("Contains URLs")
         if struct_features[2] == 1:
@@ -152,7 +167,6 @@ if st.button("Analyze Email"):
             reasons.append("Suspicious Top-Level Domain")
         if struct_features[6] == 1:
             reasons.append("Urgency-related Language")
-
         if trust_score < 0.4:
             reasons.append("Low Sender Trust Score")
 
@@ -162,9 +176,9 @@ if st.button("Analyze Email"):
         else:
             st.write("No strong structural red flags detected.")
 
-    # ==================================
+    # ============================
     # TAB 3 — FEATURE VISUALIZATION
-    # ==================================
+    # ============================
 
     with tab3:
 
@@ -197,9 +211,9 @@ if st.button("Analyze Email"):
 
         st.plotly_chart(fig, use_container_width=True)
 
-    # ==================================
+    # ============================
     # TAB 4 — FEATURE CONTRIBUTION
-    # ==================================
+    # ============================
 
     with tab4:
 
@@ -213,7 +227,7 @@ if st.button("Analyze Email"):
                 "Exclamation", "Uppercase", "Urgency", "Trust"
             ]
 
-            contributions = numeric_scaled.flatten() * numeric_coefs
+            contributions = numeric_features.flatten() * numeric_coefs
 
             fig = go.Figure(go.Bar(
                 x=contributions,
@@ -226,9 +240,9 @@ if st.button("Analyze Email"):
         else:
             st.info("Feature contribution available only for linear models.")
 
-    # ==================================
+    # ============================
     # TAB 5 — MODEL COMPARISON
-    # ==================================
+    # ============================
 
     with tab5:
 
