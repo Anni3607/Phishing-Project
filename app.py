@@ -16,22 +16,29 @@ scaler = joblib.load("structural_scaler.pkl")
 
 GLOBAL_TRUST_PRIOR = 0.5
 ALPHA = 2
+AUTO_THRESHOLD = 0.8
 
 # ============================
-# SQLITE DATABASE
+# SQLITE DATABASE (CACHED)
 # ============================
 
-conn = sqlite3.connect("sender_reputation.db", check_same_thread=False)
-cursor = conn.cursor()
+@st.cache_resource
+def init_db():
+    conn = sqlite3.connect("sender_reputation.db", check_same_thread=False)
+    cursor = conn.cursor()
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS sender_reputation (
-    sender TEXT PRIMARY KEY,
-    legit_count INTEGER,
-    phish_count INTEGER
-)
-""")
-conn.commit()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sender_reputation (
+        sender TEXT PRIMARY KEY,
+        legit_count INTEGER,
+        phish_count INTEGER
+    )
+    """)
+
+    conn.commit()
+    return conn, cursor
+
+conn, cursor = init_db()
 
 # ============================
 # FEATURE ENGINEERING
@@ -65,7 +72,7 @@ def extract_structural_features(text):
     ]
 
 # ============================
-# DYNAMIC TRUST (Human Verified)
+# TRUST SCORE
 # ============================
 
 def get_trust_score(sender):
@@ -74,7 +81,11 @@ def get_trust_score(sender):
 
     sender = sender.strip().lower()
 
-    cursor.execute("SELECT legit_count, phish_count FROM sender_reputation WHERE sender=?", (sender,))
+    cursor.execute(
+        "SELECT legit_count, phish_count FROM sender_reputation WHERE sender=?",
+        (sender,)
+    )
+
     row = cursor.fetchone()
 
     if row:
@@ -83,6 +94,9 @@ def get_trust_score(sender):
     else:
         return GLOBAL_TRUST_PRIOR
 
+# ============================
+# UPDATE REPUTATION
+# ============================
 
 def update_reputation(sender, true_label):
     if not sender:
@@ -90,7 +104,11 @@ def update_reputation(sender, true_label):
 
     sender = sender.strip().lower()
 
-    cursor.execute("SELECT legit_count, phish_count FROM sender_reputation WHERE sender=?", (sender,))
+    cursor.execute(
+        "SELECT legit_count, phish_count FROM sender_reputation WHERE sender=?",
+        (sender,)
+    )
+
     row = cursor.fetchone()
 
     if row:
@@ -104,7 +122,8 @@ def update_reputation(sender, true_label):
         phish += 1
 
     cursor.execute("""
-    INSERT OR REPLACE INTO sender_reputation (sender, legit_count, phish_count)
+    INSERT OR REPLACE INTO sender_reputation
+    (sender, legit_count, phish_count)
     VALUES (?, ?, ?)
     """, (sender, legit, phish))
 
@@ -116,7 +135,7 @@ def update_reputation(sender, true_label):
 
 st.set_page_config(page_title="Sender-Trust Phishing Detection", layout="wide")
 st.title("Sender-Trust Aware Phishing Detection")
-st.caption("TF-IDF + Structural Features + Human-Verified Dynamic Sender Trust")
+st.caption("TF-IDF + Structural Features + Dynamic Sender Trust")
 
 sender_input = st.text_input("Sender Email")
 email_text = st.text_area("Email Content", height=220)
@@ -136,6 +155,7 @@ if st.button("Analyze Email"):
     struct_scaled = scaler.transform(struct_array)
 
     trust_array = np.array([[trust_score]])
+
     numeric_features = np.hstack([struct_scaled, trust_array])
 
     final_features = hstack([text_features, numeric_features])
@@ -144,7 +164,20 @@ if st.button("Analyze Email"):
     prob_pct = probability * 100
     trust_pct = trust_score * 100
 
-    # Text-only comparison
+    # ============================
+    # AUTO LEARNING
+    # ============================
+
+    if probability > AUTO_THRESHOLD:
+        update_reputation(sender_input, 1)
+
+    elif probability < (1 - AUTO_THRESHOLD):
+        update_reputation(sender_input, 0)
+
+    # ============================
+    # TEXT ONLY COMPARISON
+    # ============================
+
     zero_numeric = np.zeros_like(numeric_features)
     text_only_features = hstack([text_features, zero_numeric])
     text_prob_pct = model.predict_proba(text_only_features)[0][1] * 100
@@ -163,8 +196,12 @@ if st.button("Analyze Email"):
         "Top Word Signals"
     ])
 
-    # TAB 1 — Prediction
+    # ============================
+    # TAB 1
+    # ============================
+
     with tab1:
+
         st.subheader("Risk Level")
 
         fig = go.Figure(go.Indicator(
@@ -194,28 +231,39 @@ if st.button("Analyze Email"):
         st.write(f"Sender Trust Score: {trust_pct:.1f}%")
 
         st.divider()
+
         st.subheader("Confirm Ground Truth")
 
         col1, col2 = st.columns(2)
 
         if col1.button("Mark as Legitimate"):
             update_reputation(sender_input, 0)
-            st.success("Reputation updated as Legitimate")
+            st.success("Reputation updated")
 
         if col2.button("Mark as Phishing"):
             update_reputation(sender_input, 1)
-            st.success("Reputation updated as Phishing")
+            st.success("Reputation updated")
 
-    # TAB 2 — Behavior
+    # ============================
+    # TAB 2
+    # ============================
+
     with tab2:
-        st.subheader("Sender Trust (Human Verified)")
+
+        st.subheader("Sender Trust")
         st.progress(float(trust_score))
         st.write(f"Trust Score: {trust_pct:.1f}%")
 
-    # TAB 3 — Radar
+    # ============================
+    # TAB 3
+    # ============================
+
     with tab3:
-        labels = ["URLs","Domains","IP","TLD",
-                  "Exclaim","Uppercase","Urgency","Trust"]
+
+        labels = [
+            "URLs","Domains","IP","TLD",
+            "Exclaim","Uppercase","Urgency","Trust"
+        ]
 
         values = [
             min(struct_features[0],5),
@@ -230,61 +278,105 @@ if st.button("Analyze Email"):
 
         fig = go.Figure()
         fig.add_trace(go.Scatterpolar(r=values, theta=labels, fill='toself'))
-        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0,5])), height=450)
+
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0,5])),
+            height=450
+        )
+
         st.plotly_chart(fig, width="stretch")
 
-    # TAB 4 — Numeric Contributions
+    # ============================
+    # TAB 4
+    # ============================
+
     with tab4:
+
         if hasattr(model,"coef_"):
+
             coefficients = model.coef_[0]
             text_dim = text_features.shape[1]
+
             numeric_coefs = coefficients[text_dim:]
-            feature_names = ["URLs","Domains","IP URL","Suspicious TLD",
-                             "Exclamation","Uppercase","Urgency","Trust"]
+
+            feature_names = [
+                "URLs","Domains","IP URL","Suspicious TLD",
+                "Exclamation","Uppercase","Urgency","Trust"
+            ]
+
             contributions = numeric_features.flatten()*numeric_coefs
 
-            fig = go.Figure(go.Bar(x=contributions, y=feature_names, orientation='h'))
+            fig = go.Figure(go.Bar(
+                x=contributions,
+                y=feature_names,
+                orientation='h'
+            ))
+
             fig.update_layout(height=500)
+
             st.plotly_chart(fig, width="stretch")
 
-    # TAB 5 — Comparison
+    # ============================
+    # TAB 5
+    # ============================
+
     with tab5:
+
         col1,col2 = st.columns(2)
+
         col1.metric("Text-only Probability", f"{text_prob_pct:.1f}%")
         col2.metric("Trust-Aware Probability", f"{prob_pct:.1f}%")
 
-    # TAB 6 — SIMPLE Risk Breakdown
+    # ============================
+    # TAB 6
+    # ============================
+
     with tab6:
+
         st.subheader("Risk Breakdown")
 
         st.metric("Text-Based Risk", f"{text_prob_pct:.1f}%")
         st.metric("Sender Trust Influence", f"{(prob_pct - text_prob_pct):+.1f}%")
 
         if prob_pct > text_prob_pct:
-            st.write("Sender reputation increased overall risk.")
-        elif prob_pct < text_prob_pct:
-            st.write("Sender reputation reduced overall risk.")
-        else:
-            st.write("Sender reputation had no effect.")
+            st.write("Sender reputation increased risk")
 
-    # TAB 7 — Top Words
+        elif prob_pct < text_prob_pct:
+            st.write("Sender reputation reduced risk")
+
+        else:
+            st.write("Sender reputation had no effect")
+
+    # ============================
+    # TAB 7
+    # ============================
+
     with tab7:
+
         if hasattr(model,"coef_"):
+
             coefficients = model.coef_[0]
             text_dim = text_features.shape[1]
+
             feature_names = vectorizer.get_feature_names_out()
+
             text_vector = text_features.toarray().flatten()
+
             word_contributions = text_vector * coefficients[:text_dim]
 
             top_pos = np.argsort(word_contributions)[-10:]
             top_neg = np.argsort(word_contributions)[:10]
 
             st.subheader("Top Phishing Indicators")
+
             for idx in reversed(top_pos):
+
                 if word_contributions[idx] > 0:
                     st.write(feature_names[idx], round(word_contributions[idx],4))
 
             st.subheader("Top Legitimate Indicators")
+
             for idx in top_neg:
+
                 if word_contributions[idx] < 0:
                     st.write(feature_names[idx], round(word_contributions[idx],4))
