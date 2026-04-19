@@ -1,5 +1,7 @@
 Context-Aware Phishing Detection using Machine Learning and Sender Behavior Analysis
 
+Link : https://phishing-project-fgkpte5dtgxspldaqkhh8e.streamlit.app/
+
 This project implements a context-aware phishing detection system that combines email content analysis with sender behavioral profiling. Unlike traditional text-only phishing detectors, this system integrates linguistic features, structural indicators, and sender trust history to produce a more informed and explainable prediction.
 
 Overview
